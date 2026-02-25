@@ -1,58 +1,48 @@
 package clients
 
 import (
-	"errors"
+	"fmt"
 	"net"
 	"sync"
 )
 
-func Connect(conn net.Conn) Client {
+func New(conn net.Conn) *Client {
 	c := makeClient(conn)
 
-	state.mu.Lock()
-	state.clients[c.RemoteAddr.String()] = &c
-	state.mu.Unlock()
+	Clients.mu.Lock()
+	Clients.clients[c.RemoteAddr.String()] = &c
+	Clients.mu.Unlock()
 
-	state.events <- statusEvent{
-		status:     Connected,
-		remoteAddr: c.RemoteAddr,
+	Clients.events <- Event{
+		Status:     Connected,
+		RemoteAddr: c.RemoteAddr,
 	}
 
-	return c
+	fmt.Println("debug: new client connected")
+	return &c
 }
 
-func Disconnect(addr net.Addr) error {
-	c, err := GetClient(addr)
-	if err != nil {
-		return err
-	}
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		Clients.mu.Lock()
 
-	state.mu.Lock()
+		delete(Clients.clients, c.RemoteAddr.String())
 
-	delete(state.clients, c.RemoteAddr.String())
+		Clients.events <- Event{
+			Status:     Disconnected,
+			RemoteAddr: c.RemoteAddr,
+		}
 
-	state.events <- statusEvent{status: Disconnected, remoteAddr: c.RemoteAddr}
-	state.mu.Unlock()
+		Clients.mu.Unlock()
 
-	close(c.done)
-
-	return nil
-}
-
-func GetClient(addr net.Addr) (*Client, error) {
-	state.mu.RLock()
-	c := state.clients[addr.String()]
-	state.mu.RUnlock()
-
-	if c == nil {
-		return nil, errors.New("Could not find client")
-	}
-	return c, nil
-
+		close(c.done)
+		fmt.Println("debug: client destroyed")
+	})
 }
 
 func makeClient(conn net.Conn) Client {
 	done := make(chan struct{})
+
 	return Client{
 		RemoteAddr: conn.RemoteAddr(),
 		Conn:       conn,
@@ -61,9 +51,13 @@ func makeClient(conn net.Conn) Client {
 	}
 }
 
-var state = &clients{
+var events chan Event = make(chan Event, 64)
+var Events <-chan Event = events
+
+var Clients = &clients{
 	clients: make(map[string]*Client),
-	events:  make(chan statusEvent),
+	events:  events,
+	Events:  Events,
 }
 
 // types
@@ -74,9 +68,16 @@ const (
 	Disconnected
 )
 
-type statusEvent struct {
-	status     Status
-	remoteAddr net.Addr
+type Event struct {
+	Status     Status
+	RemoteAddr net.Addr
+}
+
+type clients struct {
+	mu      sync.RWMutex
+	clients map[string]*Client
+	Events  <-chan Event
+	events  chan Event
 }
 
 type Client struct {
@@ -84,10 +85,5 @@ type Client struct {
 	Done       <-chan struct{}
 	RemoteAddr net.Addr
 	done       chan struct{}
-}
-
-type clients struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
-	events  chan statusEvent
+	closeOnce  sync.Once
 }

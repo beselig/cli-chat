@@ -25,22 +25,28 @@ func main() {
 		if err != nil {
 			log.Printf("Failed to conenct to %s: %v", addr, err)
 		}
-		fmt.Println("Client ", conn.RemoteAddr(), "connected")
+		fmt.Println("Client", conn.RemoteAddr(), "connected")
 
-		client := clients.Connect(conn)
+		client := clients.New(conn)
 		go readMessages(client, messagesChannel)
 		go writeMessages(client, messagesChannel)
+		go func() {
+			for event := range clients.Events {
+				fmt.Println("debug:", event.RemoteAddr, "new status:", event.Status)
+			}
+		}()
 
 	}
 }
 
-func readMessages(c clients.Client, channel chan []byte) {
+func readMessages(c *clients.Client, channel chan []byte) {
 	for {
 		buf := make([]byte, 8)
 		n, err := c.Conn.Read(buf)
 
 		if errors.Is(err, io.EOF) {
-			clients.Disconnect(c.RemoteAddr)
+			fmt.Println("client disconnected")
+			c.Close()
 			break
 		}
 		if err != nil {
@@ -57,13 +63,13 @@ func readMessages(c clients.Client, channel chan []byte) {
 	}
 }
 
-func writeMessages(c clients.Client, messages chan []byte) {
+func writeMessages(c *clients.Client, messages chan []byte) {
 	for {
 		select {
 		case message := <-messages:
 			_, err := c.Conn.Write(message)
 			if err != nil {
-				fmt.Println("Client ", c.Conn.RemoteAddr(), " disconnected") // TODO: send message to remaining clients
+				fmt.Println("Client ", c.Conn.RemoteAddr(), " disconnected")
 			}
 		case <-c.Done:
 			c.Conn.Close()
